@@ -1,0 +1,12 @@
+.DS_Store
+lib
+bin
+include
+share
+pyvenv.cfg
+__pycache__
+
+config.py
+*_S1_ASF_pyroSAR
+tests
+notes.txt

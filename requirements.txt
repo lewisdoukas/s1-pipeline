@@ -1,0 +1,7 @@
+numpy
+pyproj
+shapely
+rasterio
+asf_search
+gdal==3.6.2
+pyroSAR
