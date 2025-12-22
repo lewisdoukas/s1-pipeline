@@ -8,5 +8,7 @@ __pycache__
 
 config.py
 *_S1_ASF_pyroSAR
+*_S1_CDSE_pyroSAR
+*_S1_CDSE_GDAL
 tests
 notes.txt

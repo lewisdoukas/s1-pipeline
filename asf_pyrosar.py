@@ -1,100 +1,20 @@
-import os
-os.environ["PATH"] = "/Applications/esa-snap/bin:" + os.environ.get("PATH", "")
-
-import time, glob, json, datetime
-import numpy as np
-
+import os, time, glob, datetime
 import asf_search as asf
 import rasterio
-from rasterio.mask import mask
-from shapely.geometry import box, mapping
-from shapely.ops import transform as shp_transform
-from pyproj import Transformer
-
+from shapely.geometry import box
 from pyroSAR import identify
 from pyroSAR.snap.util import geocode
 
+from helpers import clip_to_bbox4326, write_aoi_geojson_from_bbox
 from config import EARTHDATA_USERNAME, EARTHDATA_PASSWORD
-
-
-
-# ----------------------------- #
-# ---------- HELPERS ---------- #
-# ----------------------------- #
-def write_aoi_geojson_from_bbox(bbox4326, out_geojson="aoi.geojson"):
-    geom = mapping(box(*bbox4326))
-    fc = {
-        "type": "FeatureCollection",
-        "features": [
-            {"type": "Feature", "properties": {}, "geometry": geom}
-        ],
-    }
-    with open(out_geojson, "w") as f:
-        json.dump(fc, f)
-    return out_geojson
-
-
-def to_db(x):
-    # If data is already in dB skip this
-    # dB is when: np.nanmin(vv), np.nanmax(vv) gives -35 -> +5
-    return 10.0 * np.log10(np.maximum(x, 1e-10))
-
-def stretch01(x, pmin=2, pmax=98):
-    lo, hi = np.nanpercentile(x, [pmin, pmax])
-    y = (x - lo) / (hi - lo + 1e-12)
-    return np.clip(y, 0, 1).astype(np.float32)
-
-
-def build_sar_rgb(vv_db, vh_db):
-    # False-color SAR composite
-    # R = VV(dB), G = VH(dB), B = VV-VH(dB)
-    ratio = vv_db - vh_db
-    R = stretch01(vv_db)
-    G = stretch01(vh_db)
-    B = stretch01(ratio)
-    return np.dstack([R, G, B]).astype(np.float32)
-
-
-def clip_to_bbox4326(in_path, out_path, bbox4326):
-    with rasterio.open(in_path) as src:
-        if src.crs is None:
-            raise ValueError(f"{in_path} has no CRS; cannot clip.")
-
-        geom4326 = box(*bbox4326)
-        transformer = Transformer.from_crs("EPSG:4326", src.crs, always_xy=True)
-        geom_src = shp_transform(transformer.transform, geom4326)
-
-        out_img, out_transform = mask(src, [mapping(geom_src)], crop=True)
-
-        meta = src.meta.copy()
-        meta.update(
-            height=out_img.shape[1],
-            width=out_img.shape[2],
-            transform=out_transform,
-        )
-
-    with rasterio.open(out_path, "w", **meta) as dst:
-        dst.write(out_img)
-
-    return out_path
-
-
-def write_rgb_geotiff(rgb_float01, ref_profile, out_path):
-    rgb_u8 = (rgb_float01 * 255).round().astype(np.uint8)  # HxWx3
-    profile = ref_profile.copy()
-    profile.update(count=3, dtype=rasterio.uint8, nodata=None)
-
-    with rasterio.open(out_path, "w", **profile) as dst:
-        dst.write(np.transpose(rgb_u8, (2, 0, 1)))
-
-    return out_path
-
 
 
 # ----------------------------- #
 # ---------- M A I N ---------- #
 # ----------------------------- #
-def main(bbox4326, date_start, date_end, target_crs, workdir):
+def asf_pyrosar(bbox4326, date_start, date_end, target_crs, workdir):
+    print("*** Start ASF -> pyroSAR pipeline...")
+
     t0 = time.perf_counter()
 
     os.makedirs(workdir, exist_ok=True)
@@ -204,27 +124,7 @@ def main(bbox4326, date_start, date_end, target_crs, workdir):
     print("VV clipped:", vv_clip)
     print("VH clipped:", vh_clip)
 
-
-    # -----------------------------
-    # 4) Build RGB
-    # -----------------------------
-    print("7) Building RGB (R=VV, G=VH, B=VV-VH) and saving GeoTIFF...")
-    with rasterio.open(vv_clip) as vv_src, rasterio.open(vh_clip) as vh_src:
-        vv_db = vv_src.read(1).astype(np.float32)
-        vh_db = vh_src.read(1).astype(np.float32)
-
-        if vv_src.nodata is not None:
-            vv_db = np.where(vv_db == vv_src.nodata, np.nan, vv_db)
-        if vh_src.nodata is not None:
-            vh_db = np.where(vh_db == vh_src.nodata, np.nan, vh_db)
-
-        rgb = build_sar_rgb(vv_db, vh_db)
-
-        rgb_path = os.path.join(dist_dir, "S1_RGB.tif")
-        write_rgb_geotiff(rgb, vv_src.profile, rgb_path)
-
-    print("RGB saved:", rgb_path)
-    print("\nDONE. Outputs in:", dist_dir)
+    print("\nASF-pyroSAR DONE. Outputs in:", dist_dir)
 
     t1 = time.perf_counter()
     print(f"Total Sentinel-1 pipeline time: {(t1 - t0)/60:.2f} minutes")
@@ -242,5 +142,5 @@ if __name__ == "__main__":
     now = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     workdir = now + "_S1_ASF_pyroSAR"
 
-    main(bbox4326, date_start, date_end, target_crs, workdir)
+    asf_pyrosar(bbox4326, date_start, date_end, target_crs, workdir)
 
