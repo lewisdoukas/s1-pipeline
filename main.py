@@ -1,11 +1,12 @@
 import datetime
 from cdse_gdal import cdse_gdal
+from cog_gdal import cog_gdal
 from asf_pyrosar import asf_pyrosar
 from cdse_pyrosar import cdse_pyrosar
 
 
 def main(bbox4326, date_start, date_end, target_crs, pipeline):
-    if pipeline not in ["GDAL", "ASF", "CDSE"]:
+    if pipeline not in ["GDAL", "ASF", "CDSE", "COG"]:
         raise ValueError(f"Invalid pipeline name.")
     
     now = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -14,6 +15,10 @@ def main(bbox4326, date_start, date_end, target_crs, pipeline):
     if pipeline == "GDAL":
         workdir = now + "_S1_CDSE_GDAL"
         cdse_gdal(bbox4326, date_start, date_end, workdir)
+        return
+    elif pipeline == "COG":
+        workdir = now + "_S1_COG_GDAL"
+        cog_gdal(bbox4326, date_start, date_end, workdir)
         return
     elif pipeline == "ASF":
         workdir = now + "_S1_ASF_pyroSAR"
@@ -32,7 +37,7 @@ if __name__ == "__main__":
     # target_crs = 32634 #UTM Zone 34N
     target_crs = 4326
 
-    # pipeline in ["GDAL", "ASF", "CDSE"]
+    # pipeline in ["GDAL", "ASF", "CDSE", "COG"]
     pipeline = "GDAL"
 
     main(bbox4326, date_start, date_end, target_crs, pipeline)

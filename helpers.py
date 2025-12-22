@@ -9,6 +9,7 @@ from shapely.geometry import box, mapping
 from shapely.ops import transform as shp_transform
 from pyproj import Transformer
 from pystac_client import Client
+from osgeo import gdal
 
 
 
@@ -216,3 +217,35 @@ def cdse_download_safe_zip(product_id, out_zip, access_token):
                     print(f"\rDownloading SAFE: {100*got/total:6.2f}% ({got/1e6:.1f}/{total/1e6:.1f} MB)", end="")
     print("\nSaved:", out_zip)
     return out_zip
+
+
+def warp_gcps_clip(src_tif, dst_tif, bbox4326):
+    minlon, minlat, maxlon, maxlat = bbox4326
+
+    opts = gdal.WarpOptions(
+        tps=True,                 # use GCPs
+        srcSRS="EPSG:4326",       # interpret GCP lon/lat
+        dstSRS="EPSG:4326",       # keep output in 4326
+
+        outputBounds=(minlon, minlat, maxlon, maxlat),
+        outputBoundsSRS="EPSG:4326",
+
+        resampleAlg="bilinear",       
+        srcNodata=0,
+        dstNodata=0,
+        outputType=gdal.GDT_UInt16,
+
+        multithread=True,
+        warpOptions=["NUM_THREADS=ALL_CPUS"],
+        creationOptions=[
+            "TILED=YES",
+            "COMPRESS=ZSTD",
+            "BIGTIFF=IF_SAFER",
+        ],
+    )
+
+    out = gdal.Warp(dst_tif, src_tif, options=opts)
+    if out is None:
+        raise RuntimeError(f"GDAL warp failed for {src_tif}")
+    out.FlushCache()
+    out = None
