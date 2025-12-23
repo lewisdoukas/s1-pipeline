@@ -1,175 +1,212 @@
-# Sentinel-1 ASF → pyroSAR RTC → RGB Pipeline
+# Sentinel-1 Pipelines (ASF / CDSE) → (pyroSAR or GDAL) → AOI Clips
 
-End-to-end Python pipeline for **downloading Sentinel-1 GRD data from ASF**, processing it locally with **SNAP / pyroSAR** into **RTC-like georeferenced VV & VH**, clipping to a given AOI, and generating a **SAR RGB composite** suitable for data fusion and GeoAI workflows.
+End-to-end Python pipelines for **searching, downloading, and preprocessing Sentinel-1 GRD (VV+VH)** for **data fusion / GeoAI workflows**.
+
+This repo intentionally supports **multiple backends**:
+
+- **pyroSAR + SNAP** for “RTC-style” processing (calibration / noise removal / terrain correction via SNAP geocode)
+- **GDAL-only** for fast **GCP-based geocoding + bbox clipping** (no RTC)
 
 ---
 
 ## 🚀 Features
 
-- 🔍 Search Sentinel-1 **GRD HD (IW, VV+VH)** scenes via **ASF**
-- 📦 Download original **SAFE ZIP**
-- 🛰️ Local **RTC-style processing** using **SNAP (via pyroSAR)**
-- ✂️ AOI subsetting **during processing** (fast & disk-efficient)
-- 🌍 Output in **EPSG:4326 or UTM**
-- 🎨 Generate **SAR RGB** composite (VV / VH / VV−VH)
-- ⏱️ Built-in runtime measurement
+- 🔍 Search Sentinel-1 GRD (IW, VV+VH)
+- 📦 Download **SAFE.zip** from **ASF** or **CDSE**
+- 🛰️ Process with **pyroSAR + SNAP** (pyroSAR pipelines)
+- ⚡ Fast AOI extraction with **GDAL Warp (TPS from GCPs)** (GDAL pipelines)
+- ✂️ Clip outputs to `bbox4326 = [minLon, minLat, maxLon, maxLat]`
+- ⏱️ Runtime measurement
 
 ---
 
-## 📁 Output Structure
+## 🧭 Pipelines in this repo
 
+The entry point is `main.py`, which selects one of:
+
+```python
+pipeline in ["ASF", "CDSE", "GDAL", "COG"]
 ```
-<timestamp>_S1_ASF_pyroSAR/
-├── aoi.geojson
-├── <SAFE>.zip
-├── rtc_out/
-│   ├── *_VV*.tif
-│   └── *_VH*.tif
-└── dist/
-    ├── VV_clip.tif
-    ├── VH_clip.tif
-    └── S1_RGB.tif
-```
+
+### 1) `ASF` → `asf_pyrosar.py`
+
+\*\*ASF search → download SAFE.zip → pyroSAR(SNAP) geocode → AOI subset/clip
+
+Use this when you want ASF as the data source and SNAP-based processing.
+
+---
+
+### 2) `CDSE` → `cdse_pyrosar.py`
+
+\*\*CDSE search → download SAFE.zip → pyroSAR(SNAP) geocode → AOI subset/clip
+
+Use this when you want CDSE as the data source but still want SNAP/pyroSAR processing.
+
+---
+
+### 3) `GDAL` → `cdse_gdal.py`
+
+**CDSE SAFE.zip → extract measurement TIFFs (VV/VH) → GDAL Warp (TPS from GCPs) → bbox clip (EPSG:4326)**
+
+This is the “lightweight” branch:
+
+- ✅ Fast AOI extraction
+- ✅ No SNAP dependency
+- ❌ No RTC / no calibration / no terrain correction
+
+How it works:
+
+1. Download SAFE.zip from CDSE (via helper functions)
+2. Unzip SAFE locally
+3. Read:
+
+   - `SAFE/measurement/*-vv-*.tiff`
+   - `SAFE/measurement/*-vh-*.tiff`
+
+4. Run `warp_gcps_clip()` (GDAL TPS warp + bbox clip)
+
+Outputs go to `<workdir>/dist/`.
+
+---
+
+### 4) `COG` → `cog_gdal.py`
+
+**STAC → EOData S3 download of VV/VH COGs → GDAL Warp (TPS from GCPs) → bbox clip (EPSG:4326)**
+
+What it actually does:
+
+1. Uses **STAC** (`pystac_client`) to find the **latest Sentinel-1 GRD item** within the date range / AOI logic used by the script.
+2. Reads STAC asset `href`s for `vv` and `vh`, which are `s3://eodata/...`
+3. Uses **boto3** to download those VV/VH COGs from:
+
+   - bucket: `eodata`
+   - endpoint: `https://eodata.dataspace.copernicus.eu`
+
+4. Runs `warp_gcps_clip()` to clip to `bbox4326`
+
+So the “COG pipeline” is:
+
+- ✅ remote COG download (S3)
+- ✅ GDAL-only warp+clip
+- ❌ no SAFE.zip required
+- ❌ no RTC
+
+**Credentials required**: AWS-style keys for EOData S3 access (see Config below).
 
 ---
 
 ## 🧠 Processing Logic (High Level)
 
-1. **ASF search** (Sentinel-1 GRD HD, IW, VV+VH)
-2. **SAFE ZIP download**
-3. **pyroSAR geocode**
+### pyroSAR pipelines (ASF / CDSE)
 
-   - Calibration
-   - Thermal & border noise removal
-   - Orbit application
-   - Terrain flattening
-   - Terrain correction
-   - AOI subsetting
+- Search → SAFE.zip download → pyroSAR identify/geocode via SNAP
+- Typical SNAP geocode chain is “RTC-style” (depends on your SNAP graph/options)
+- Output VV/VH in target CRS, then clip/compose as implemented
 
-4. **Clipping** (safety check)
-5. **RGB generation**
+### GDAL pipelines (GDAL / COG)
 
-   - R = VV (dB)
-   - G = VH (dB)
-   - B = VV − VH (dB)
+- GDAL Warp uses **GCP-based Thin Plate Spline (TPS)**:
 
----
+  - `tps=True`
+  - `srcSRS=EPSG:4326`, `dstSRS=EPSG:4326`
+  - `outputBounds=bbox4326`
 
-## 🧰 Requirements
+- Outputs are clipped VV/VH GeoTIFFs in EPSG:4326
 
-### System
-
-- macOS / Linux
-- ≥ 20 GB free disk space (less if AOI is small)
-- SNAP installed
-
-### SNAP
-
-Install ESA SNAP and ensure `gpt` exists:
-
-```
-/Applications/esa-snap/bin/gpt
-```
-
-### Python
-
-Tested with Python **3.10**
+> Note: GDAL pipelines do **not** produce RTC. They are intended for fast ML feature extraction / fusion signals.
 
 ---
 
-## 📦 Python Dependencies
+## 📦 Installation
 
 ```bash
-pip3 install -r requirements.txt
+pip install -r requirements.txt
 ```
 
-> **Important:** `pyroSAR` requires GDAL (`osgeo`) bindings compatible with your system GDAL.
+You will need:
+
+- GDAL installed with Python bindings (`osgeo`)
+- For pyroSAR pipelines: SNAP installed and configured
 
 ---
 
-## 🔑 Credentials
+## 🔐 Configuration
 
-Create a `config.py` file:
+This repo expects a `config.py` with credentials (imported by scripts).
+
+### CDSE
+
+Used by CDSE download helpers:
 
 ```python
-EARTHDATA_USERNAME = "your_earthdata_username"
-EARTHDATA_PASSWORD = "your_earthdata_password"
+CDSE_USERNAME = "..."
+CDSE_PASSWORD = "..."
+```
+
+### EOData S3 (used by `cog_gdal.py`)
+
+```python
+AWS_ACCESS_KEY_ID = "..."
+AWS_SECRET_ACCESS_KEY = "..."
+```
+
+EOData endpoint is:
+
+- `https://eodata.dataspace.copernicus.eu`
+
+### Earthdata (used by `asf_pyrosar.py`)
+
+```python
+EARTHDATA_USERNAME = "..."
+EARTHDATA_PASSWORD = "..."
 ```
 
 ---
 
-## ▶️ How to Run
+## ▶️ Usage
+
+### Run via `main.py`
+
+Edit in `main.py`:
+
+- `bbox4326`
+- `date_start`, `date_end`
+- `target_crs` (pyroSAR pipelines may use it; GDAL warp in helpers currently targets EPSG:4326)
+- `pipeline`
+
+Then run:
 
 ```bash
-python3 asf_pyrosar.py
-```
-
-The script will:
-
-- search ASF
-- download the most recent scene in the date range
-- process it
-- generate clipped VV, VH and RGB outputs
-
----
-
-## 🗺️ Configuration Parameters
-
-Inside `__main__`:
-
-```python
-bbox4326 = [minLon, minLat, maxLon, maxLat]
-
-date_start = "YYYY-MM-DD"
-date_end   = "YYYY-MM-DD"
-
-target_crs = 4326      # WGS84
-# target_crs = 32634   # UTM Zone 34N
+python main.py
 ```
 
 ---
 
-## ⏱️ Runtime Expectations
+## 📂 Outputs
 
-With AOI subsetting enabled:
+Each run writes into a timestamped `workdir`, e.g.:
 
-| Step          | Typical Time |
-| ------------- | ------------ |
-| ASF search    | < 1 s        |
-| SAFE download | 1–5 min      |
-| pyroSAR RTC   | 3–15 min     |
-| RGB creation  | < 10 s       |
+```
+20251223_120000_S1_CDSE_GDAL/
+├── extract/                 # SAFE unzip (GDAL pipeline)
+├── cog/                     # downloaded VV/VH COGs (COG pipeline)
+└── dist/
+    ├── VV_clip.tif
+    └── VH_clip.tif
+```
 
-Without subsetting, full-scene RTC may take **1+ hour** and >10 GB temp space.
-
----
-
-## 🧪 Notes & Gotchas
-
-- Orbit warnings (RESORB vs POEORB) are **normal**
-- AOI subsetting is **strongly recommended**
-- Use **UTM** for best fusion with Sentinel-2
+(Exact folder names depend on pipeline selection.)
 
 ---
 
-## 🔄 Future Extensions
+## ⚠️ Notes & Gotchas
 
-- Batch processing (multiple scenes)
-- Sentinel-1 + Sentinel-2 fusion
-- GeoAI model ingestion
+- EPSG:4326 uses **degrees**; do not force `xRes=10` expecting 10 meters.
+- GDAL pipelines depend on **GCPs** inside the measurement TIFF / COG.
+- Pixel values may differ between “raw” and “clipped” stats because clipping changes the sampled region and warp resampling can affect local values.
 
 ---
 
 ## 📜 License
 
 MIT
-
----
-
-## 🙌 Acknowledgements
-
-- ESA SNAP
-- ASF DAAC
-- pyroSAR developers
-
----

@@ -5,3 +5,5 @@ rasterio
 asf_search
 gdal==3.6.2
 pyroSAR
+pystac_client
+boto3
